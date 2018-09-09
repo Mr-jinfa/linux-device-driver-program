@@ -14,11 +14,11 @@ unsigned int Major=20;
 unsigned int Minor=0;
 dev_t dev_no;
 int ret;
-static struct scull_dev *dev;
+static struct scull_dev scull_devices[scull_nr_devs];
 
-int scull_trim(void)
+int scull_trim(struct scull_dev *dev)
 {
-    struct scull_qset *next, *dptr;
+    struct scull_qset *next=NULL, *dptr=NULL;
 //    printk("1\n");
     int qset = dev->qset;
     int i;
@@ -39,9 +39,7 @@ int scull_trim(void)
         }
     }
     dev->total_size = 0;
-    dev->quantum = SCULL_QUANTUN;
-    dev->qset = SCULL_QSET;
-    dev->data = NULL;
+    kfree(dev->data);
 //    printk("7\n");
     return 0;
 }
@@ -50,16 +48,18 @@ int scull_trim(void)
 *item:代表第几个scull_device设备
 *PS:scull_device链表头由全局变量dev->data标识.
 */
-struct scull_qset *scull_follow(int item)
+struct scull_qset *scull_follow(struct scull_dev *dev, int item)
 {
 	struct scull_qset *dev_dst=NULL;	//第几个链表项	
 	int i=0;
+	printk("scull_follow\n");
 	if(dev->data == NULL)
 	{
-		printk(KERN_ERR "can not follow\n");
-		return NULL;
+		printk(KERN_ERR "new qset and this first qset\n");
+		dev_dst = kmalloc(sizeof(struct scull_qset), GFP_KERNEL); //初始化第一个链表项
+		memset(dev_dst, 0, sizeof(struct scull_qset));
+		scull_devices[i].data = dev_dst;
 	}
-	printk("scull_follow\n");
 //沿着dev->data根据item下标找到具体的dev_dst
 	dev_dst = dev->data;	
 //	printk("scull_follow:1.1\n");
@@ -78,12 +78,21 @@ struct scull_qset *scull_follow(int item)
 int scull_open(struct inode *inode,struct file *filp)
 {
     printk("scull open\n");
+    /* device information */
+    struct scull_dev *dev = container_of(inode->i_cdev, struct scull_dev, cdev);
+
+    filp->private_data = dev;	/* for other methods */
+    /* now trim to 0 the length of the device if open was write-only */
+    if((filp->f_flags & O_ACCMODE) == O_WRONLY)
+    	scull_trim(dev);
     return 0;
 }
 
 ssize_t scull_write(struct file *filp, const char __user *usr, size_t len, loff_t *off)
 {
-//	printk("scull write\n");
+	printk(KERN_ERR "scull write\n");
+    struct scull_dev *dev = filp->private_data;	/* device information */
+    
     struct scull_qset *dptr;    //第几个链表项
     int quantum = dev->quantum, qset = dev->qset;
     int itemsize = quantum * qset; //该链表项中有多少字节
@@ -99,7 +108,7 @@ ssize_t scull_write(struct file *filp, const char __user *usr, size_t len, loff_
 	s_pos = rest / quantum;			//用上面的偏移求出第几个原子项
 	q_pos = rest % quantum;			//具体原子项下的基地址到达off的偏移
     /* 沿该链表前行,直到正确的链表项位置 */
-	dptr = scull_follow(item);
+	dptr = scull_follow(dev, item);
 	if(dptr == NULL) {
 		printk(KERN_ERR "can not find a block!\n");
 		goto out;
@@ -133,7 +142,7 @@ ssize_t scull_write(struct file *filp, const char __user *usr, size_t len, loff_
 	if(dev->total_size < *off)
 		dev->total_size = *off;
 	
-	printk(" write length:%d\n now block dev size:%d\n", len, dev->total_size);
+	printk(KERN_ERR " write length:%d\n now block dev size:%d\n", len, (int)dev->total_size);
 	up(&dev->sem);
 	return retval;
 out:
@@ -143,7 +152,9 @@ out:
 
 ssize_t scull_read(struct file *filp, char __user *usr, size_t len, loff_t *off)
 {
-	printk("scull read\n");
+	printk(KERN_ERR "scull read\n");
+    struct scull_dev *dev = filp->private_data;	/* device information */
+
     struct scull_qset *dptr;    //第几个链表项
     int quantum = dev->quantum, qset = dev->qset;
     int itemsize = quantum * qset; //该链表项中有多少字节
@@ -152,7 +163,7 @@ ssize_t scull_read(struct file *filp, char __user *usr, size_t len, loff_t *off)
 //    if(down_interruptible(&dev->sem));
 //        return -ERESTARTSYS;
     if(*off >= dev->total_size) {
-		printk(KERN_ERR "off:%d  total:%d  off>=total!\n", *off, dev->total_size);
+		printk(KERN_ERR "off:%d  total:%d  off>=total!\n", (int)*off, (int)dev->total_size);
     	goto out;
     }
     if(*off + len > dev->total_size)	//如果读取的位置溢出的话
@@ -164,7 +175,7 @@ ssize_t scull_read(struct file *filp, char __user *usr, size_t len, loff_t *off)
 	q_pos = rest % quantum;			//具体原子项下的基地址到达off的偏移
 
 	/* 沿该链表前行,直到正确的链表项位置 */
-	dptr = scull_follow(item);
+	dptr = scull_follow(dev, item);
 	if(dptr == NULL || !dptr->data || !dptr->data[s_pos]) {
 		printk(KERN_ERR "can`t find correct place!\n");
 		goto out;	//don`t fill holes
@@ -182,6 +193,7 @@ ssize_t scull_read(struct file *filp, char __user *usr, size_t len, loff_t *off)
 	//更新文件指针
 	*off += len;
 	retval = len;
+	printk(KERN_ERR " read length:%d\n now block dev size:%d\n", len, (int)dev->total_size);
 //	up(&dev->sem);
 	return retval;
 out:
@@ -196,7 +208,7 @@ int scull_release(struct inode *inode, struct file *file)
 
 }
 
-struct file_operations fops=
+struct file_operations scull_fops=
 {
     .owner=THIS_MODULE,
     .open = scull_open,
@@ -204,63 +216,57 @@ struct file_operations fops=
     .read = scull_read,
     .release = scull_release,
 };
-static int __init scull_init(void)
-{
-	struct scull_qset* qset = NULL;
-	int i=0;
 
-    dev = kmalloc(sizeof(struct scull_dev), GFP_KERNEL);
-    memset(dev, 0, sizeof(struct scull_dev));
-    dev_no = MKDEV(Major,Minor);
+static int scull_setup_cdev(struct scull_dev *dev, int index)
+{
+	int err;
+	
+    dev_no = MKDEV(Major, Minor+index);
     if(dev_no>0)
-    {
         ret = register_chrdev_region(dev_no,1,"scull");    
-    }
     else
-    {
         alloc_chrdev_region(&dev_no,0,1,"scull");
-    }
-    if(ret<0)
-    {
+
+    cdev_init(&dev->cdev,&scull_fops);
+    dev->cdev.owner=THIS_MODULE;
+    dev->cdev.ops = &scull_fops;
+    cdev_add(&dev->cdev,dev_no,1);
+    if(ret<0) {
+		printk(KERN_ERR "Error %d adding scull%d", err, index);
         return ret;
     }
-    cdev_init(&dev->cdev,&fops);
-    dev->cdev.owner=THIS_MODULE;
-    cdev_add(&dev->cdev,dev_no,1);
-    
-	//先清空下block device
-	scull_trim();
-	//申请下block device
-	dev->quantum = SCULL_QUANTUN;
-	dev->qset = SCULL_QSET;
-	dev->data = NULL;
-	printk(KERN_ERR "\thello\n");
-	/* 头插法 */
-	for(i=0; i<TOTAL_BLOCK; i++)
-	{
-		qset = kmalloc(sizeof(struct scull_qset), GFP_KERNEL); //初始化第一个链表项
-		memset(qset, 0, sizeof(struct scull_qset));
-		if(dev->data != NULL)
-			qset = dev->data->next;
-		dev->data = qset;
-	}	 
+    return 0;
+}
+
+
+static int __init scull_init(void)
+{
 	
-//	  dev->data->data = kmalloc(sizeof(char *) * dev->qset, GFP_KERNEL);	//初始化第一个qset PS:数组名等于数组第一个元素地址
-//	  memset(dev->data->data, 0, dev->qset * sizeof(char *));
-	sema_init(&dev->sem, TOTAL_BLOCK);
+	int i=0;
+
+    for(i=0; i< scull_nr_devs; i++)
+    {
+		//申请下block device
+		scull_devices[i].quantum = SCULL_QUANTUN;
+		scull_devices[i].qset = SCULL_QSET;
+		init_MUTEX(&scull_devices[i].sem);
+		scull_setup_cdev(&scull_devices[i], i);
+    }
     printk("hello scull\n");
     return 0;
 }
 
-static int __exit scull_exit(void)
-{
-    scull_trim();
-    
-    kfree(dev);
-    unregister_chrdev_region(dev_no,1);
-    cdev_del(&dev->cdev);
-    printk("scull exit\n");
-    return 0;
+static void __exit scull_exit(void)
+{	
+	int i=0;
+    for(i=0; i< scull_nr_devs; i++)
+    {
+	    scull_trim(&scull_devices[i]);
+	    unregister_chrdev_region(dev_no,1);
+	    cdev_del(&scull_devices[i].cdev);
+	    printk(KERN_ERR "scull_%d exit\n", i);
+	}
+
 }
 
 module_init(scull_init);

@@ -20,7 +20,7 @@ struct scull_dev
 	struct cdev cdev;			//字符结构
 };
 
-#define TOTAL_BLOCK 	3
+#define scull_nr_devs 	3
 
 
 
