@@ -1,3 +1,6 @@
+/*
+*使用互斥信号量来做互斥
+*/
 #include<linux/module.h>
 #include<linux/kernel.h>
 #include<linux/cdev.h>
@@ -163,8 +166,7 @@ ssize_t scull_read(struct file *filp, char __user *usr, size_t len, loff_t *off)
     int item, s_pos, q_pos, rest;
     ssize_t retval = 0;
 
-    if(down_interruptible(&dev->sem));
-        return -ERESTARTSYS;
+    down_interruptible(&dev->sem);
 
     if(*off >= dev->total_size) {
 		printk(KERN_ERR "off:%d  total:%d  off>=total!\n", (int)*off, (int)dev->total_size);
