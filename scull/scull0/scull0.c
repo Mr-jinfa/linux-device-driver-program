@@ -12,8 +12,6 @@
 #include "scull0.h"
 unsigned int Major=20;
 unsigned int Minor=0;
-dev_t dev_no;
-int ret;
 static struct scull_dev scull_devices[scull_nr_devs];
 
 int scull_trim(struct scull_dev *dev)
@@ -84,6 +82,8 @@ int scull_open(struct inode *inode,struct file *filp)
     /* now trim to 0 the length of the device if open was write-only */
     if((filp->f_flags & O_ACCMODE) == O_WRONLY)
     	scull_trim(dev);
+
+    printk("[open] sem count:%d\n", dev->sem.count);
     return 0;
 }
 
@@ -162,8 +162,10 @@ ssize_t scull_read(struct file *filp, char __user *usr, size_t len, loff_t *off)
     int itemsize = quantum * qset; //该链表项中有多少字节
     int item, s_pos, q_pos, rest;
     ssize_t retval = 0;
-//    if(down_interruptible(&dev->sem));
-//        return -ERESTARTSYS;
+
+    if(down_interruptible(&dev->sem));
+        return -ERESTARTSYS;
+
     if(*off >= dev->total_size) {
 		printk(KERN_ERR "off:%d  total:%d  off>=total!\n", (int)*off, (int)dev->total_size);
     	goto out;
@@ -199,7 +201,7 @@ ssize_t scull_read(struct file *filp, char __user *usr, size_t len, loff_t *off)
 
 out:
 	printk(KERN_ERR "exit read\n\n");
-//	up(&dev->sem);
+	up(&dev->sem);
 	return retval;
 }
 
@@ -222,10 +224,10 @@ struct file_operations scull_fops=
 static int scull_setup_cdev(struct scull_dev *dev, int index)
 {
 	int err;
-	
+	dev_t dev_no;
     dev_no = MKDEV(Major, Minor+index);
     if(dev_no>0)
-        ret = register_chrdev_region(dev_no,1,"scull");    
+        err = register_chrdev_region(dev_no,1,"scull");    
     else
         alloc_chrdev_region(&dev_no,0,1,"scull");
 
@@ -233,9 +235,9 @@ static int scull_setup_cdev(struct scull_dev *dev, int index)
     dev->cdev.owner=THIS_MODULE;
     dev->cdev.ops = &scull_fops;
     cdev_add(&dev->cdev,dev_no,1);
-    if(ret<0) {
+    if(err<0) {
 		printk(KERN_ERR "Error %d adding scull%d", err, index);
-        return ret;
+        return err;
     }
     return 0;
 }
@@ -243,7 +245,6 @@ static int scull_setup_cdev(struct scull_dev *dev, int index)
 
 static int __init scull_init(void)
 {
-	
 	int i=0;
 
     for(i=0; i< scull_nr_devs; i++)
@@ -259,15 +260,17 @@ static int __init scull_init(void)
 }
 
 static void __exit scull_exit(void)
-{	
-	int i=0;
-    for(i=0; i< scull_nr_devs; i++)
+{
+	dev_t dev_no;
+	int index=0;
+    for(index=0; index< scull_nr_devs; index++)
     {
-	    scull_trim(&scull_devices[i]);
-	    kfree(scull_devices[i].data);
+	    dev_no = MKDEV(Major, Minor+index);
+	    scull_trim(&scull_devices[index]);
+	    kfree(scull_devices[index].data);
 	    unregister_chrdev_region(dev_no,1);
-	    cdev_del(&scull_devices[i].cdev);
-	    printk(KERN_ERR "scull_%d exit\n", i);
+	    cdev_del(&scull_devices[index].cdev);
+	    printk(KERN_ERR "scull_%d exit\n", index);
 	}
 
 }
