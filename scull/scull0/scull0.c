@@ -19,7 +19,7 @@ static struct scull_dev scull_devices[scull_nr_devs];
 int scull_trim(struct scull_dev *dev)
 {
     struct scull_qset *next=NULL, *dptr=NULL;
-//    printk("1\n");
+    printk(KERN_ERR "scull_trim\n");
     int qset = dev->qset;
     int i;
     //所有链表
@@ -39,7 +39,6 @@ int scull_trim(struct scull_dev *dev)
         }
     }
     dev->total_size = 0;
-    kfree(dev->data);
 //    printk("7\n");
     return 0;
 }
@@ -58,7 +57,7 @@ struct scull_qset *scull_follow(struct scull_dev *dev, int item)
 		printk(KERN_ERR "new qset and this first qset\n");
 		dev_dst = kmalloc(sizeof(struct scull_qset), GFP_KERNEL); //初始化第一个链表项
 		memset(dev_dst, 0, sizeof(struct scull_qset));
-		scull_devices[i].data = dev_dst;
+		dev->data = dev_dst;
 	}
 //沿着dev->data根据item下标找到具体的dev_dst
 	dev_dst = dev->data;	
@@ -78,7 +77,7 @@ struct scull_qset *scull_follow(struct scull_dev *dev, int item)
 int scull_open(struct inode *inode,struct file *filp)
 {
     printk("scull open\n");
-    /* device information */
+    /* device information 根据打开的不同scull设备来找寻dev info*/
     struct scull_dev *dev = container_of(inode->i_cdev, struct scull_dev, cdev);
 
     filp->private_data = dev;	/* for other methods */
@@ -99,6 +98,9 @@ ssize_t scull_write(struct file *filp, const char __user *usr, size_t len, loff_
     int item, s_pos, q_pos, rest;
     ssize_t retval = ENOMEM;
 
+	/* 返回-ERESTART 意味着驱动能够撤销已经对任何用户做出的修改，简单的说就是驱动已经还原状态
+	如果驱动无法还原这些状态的话需要返回-EINTR
+	*/
     if(down_interruptible(&dev->sem))
     	return -ERESTART;
 
@@ -143,9 +145,9 @@ ssize_t scull_write(struct file *filp, const char __user *usr, size_t len, loff_
 		dev->total_size = *off;
 	
 	printk(KERN_ERR " write length:%d\n now block dev size:%d\n", len, (int)dev->total_size);
-	up(&dev->sem);
-	return retval;
+	
 out:
+	printk(KERN_ERR "exit write\n\n");
 	up(&dev->sem);
 	return retval;
 }
@@ -194,9 +196,9 @@ ssize_t scull_read(struct file *filp, char __user *usr, size_t len, loff_t *off)
 	*off += len;
 	retval = len;
 	printk(KERN_ERR " read length:%d\n now block dev size:%d\n", len, (int)dev->total_size);
-//	up(&dev->sem);
-	return retval;
+
 out:
+	printk(KERN_ERR "exit read\n\n");
 //	up(&dev->sem);
 	return retval;
 }
@@ -262,6 +264,7 @@ static void __exit scull_exit(void)
     for(i=0; i< scull_nr_devs; i++)
     {
 	    scull_trim(&scull_devices[i]);
+	    kfree(scull_devices[i].data);
 	    unregister_chrdev_region(dev_no,1);
 	    cdev_del(&scull_devices[i].cdev);
 	    printk(KERN_ERR "scull_%d exit\n", i);
